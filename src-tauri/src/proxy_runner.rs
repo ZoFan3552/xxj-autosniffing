@@ -277,13 +277,19 @@ impl Drop for ProxyRunner {
 
 fn find_python() -> Option<String> {
     for name in &["python", "python3"] {
-        if Command::new(name)
-            .arg("--version")
+        let mut cmd = Command::new(name);
+        cmd.arg("--version")
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok()
+            .stderr(Stdio::null());
+
+        #[cfg(target_os = "windows")]
         {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        if cmd.status().is_ok() {
             return Some(name.to_string());
         }
     }
