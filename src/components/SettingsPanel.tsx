@@ -93,7 +93,12 @@ export function SettingsPanel({
         <input
           type="number"
           value={config.proxy_port}
-          onChange={(e) => update("proxy_port", parseInt(e.target.value) || 8080)}
+          onChange={(e) => {
+            const v = parseInt(e.target.value, 10);
+            if (!Number.isNaN(v) && v >= 1 && v <= 65535) {
+              update("proxy_port", v);
+            }
+          }}
         />
       </div>
 

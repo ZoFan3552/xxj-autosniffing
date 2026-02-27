@@ -56,5 +56,5 @@ export interface InterceptRequest {
   method: string;
   url: string;
   body_plain: string | null;
-  status_code?: number | null;
+  status_code?: number;
 }

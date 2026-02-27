@@ -119,12 +119,18 @@ function JsonBody({ text }: { text: string | null | undefined }) {
   if (!text) return <pre style={{ color: "var(--text-2)" }}>（空）</pre>;
 
   const displayText = parsed != null ? JSON.stringify(parsed, null, 2) : text;
+  const jsonViewStyle = useMemo(() => ({ ...darkStyles, container: "json-tree-root" }), []);
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(displayText).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
+    navigator.clipboard
+      .writeText(displayText)
+      .then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      })
+      .catch(() => {
+        // Clipboard access can be denied by the platform/browser.
+      });
   };
 
   return (
@@ -133,7 +139,7 @@ function JsonBody({ text }: { text: string | null | undefined }) {
         {copied ? "✓ 已复制" : "复制"}
       </button>
       {parsed != null ? (
-        <JsonView data={parsed} style={{ ...darkStyles, container: "json-tree-root" }} />
+        <JsonView data={parsed} style={jsonViewStyle} />
       ) : (
         <pre>{text}</pre>
       )}

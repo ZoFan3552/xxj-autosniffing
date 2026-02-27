@@ -16,9 +16,9 @@ Lifecycle:
 """
 import asyncio
 import base64
+import contextlib
 import io
 import re
-import socket
 import sys
 import json
 import time
@@ -46,6 +46,7 @@ _async_client: httpx.AsyncClient | None = None
 _intercepted_flows: dict[str, tuple[http.HTTPFlow, str]] = {}
 # Maps intercept_id → (action, body) for completed intercept responses
 _intercept_results: dict[str, tuple[str, str | None]] = {}
+_intercept_result_times: dict[str, float] = {}
 _intercept_waiters: dict[str, asyncio.Event] = {}
 _intercept_lock = threading.Lock()
 
@@ -58,12 +59,35 @@ _config_lock = threading.Lock()
 
 _MAX_SEEN_FLOWS = 10000
 _seq_counter = 0
+_seq_lock = threading.Lock()
+_regex_cache: dict[str, re.Pattern | None] = {}
+_CLEANUP_INTERVAL_SECONDS = 60
+_INTERCEPT_TTL_SECONDS = 120
 
 
 def _next_seq() -> int:
     global _seq_counter
-    _seq_counter += 1
-    return _seq_counter
+    with _seq_lock:
+        _seq_counter += 1
+        return _seq_counter
+
+
+def _get_pattern(pat: str) -> re.Pattern | None:
+    with _config_lock:
+        if pat in _regex_cache:
+            return _regex_cache[pat]
+
+    try:
+        compiled = re.compile(pat)
+    except re.error:
+        compiled = None
+
+    with _config_lock:
+        existing = _regex_cache.get(pat)
+        if pat in _regex_cache:
+            return existing
+        _regex_cache[pat] = compiled
+        return compiled
 
 
 def _emit(event_type, data):
@@ -139,10 +163,11 @@ def _should_break(url: str, phase: str) -> bool:
         pat = rule.get("url_pattern", "")
         if not pat:
             continue
-        try:
-            matched = bool(re.search(pat, url))
-        except re.error:
+        compiled = _get_pattern(pat)
+        if compiled is None:
             matched = pat in url
+        else:
+            matched = bool(compiled.search(url))
         if not matched:
             continue
         if phase == "request" and rule.get("break_request", False):
@@ -258,6 +283,7 @@ async def _do_intercept(flow: http.HTTPFlow, intercept_id: str, phase: str,
     with _intercept_lock:
         _intercepted_flows.pop(intercept_id, None)
         _intercept_waiters.pop(intercept_id, None)
+        _intercept_result_times.pop(intercept_id, None)
         result = _intercept_results.pop(intercept_id, None)
 
     # Explicitly resume from the flow loop after decision/timeout.
@@ -266,6 +292,25 @@ async def _do_intercept(flow: http.HTTPFlow, intercept_id: str, phase: str,
 
     _emit("log", {"level": "debug", "msg": f"[intercept] result for {intercept_id}: {result[0] if result else 'None'}"})
     return result
+
+
+async def _sweep_orphan_intercept_results() -> None:
+    while True:
+        await asyncio.sleep(_CLEANUP_INTERVAL_SECONDS)
+        cutoff = time.time() - _INTERCEPT_TTL_SECONDS
+        removed = 0
+        with _intercept_lock:
+            expired_ids = [
+                flow_id
+                for flow_id, created_at in _intercept_result_times.items()
+                if created_at < cutoff and flow_id not in _intercepted_flows
+            ]
+            for flow_id in expired_ids:
+                _intercept_result_times.pop(flow_id, None)
+                if _intercept_results.pop(flow_id, None) is not None:
+                    removed += 1
+        if removed:
+            _emit("log", {"level": "debug", "msg": f"cleaned {removed} stale intercept result(s)"})
 
 
 class SniffAddon:
@@ -466,6 +511,7 @@ def _handle_intercept_respond(line: str):
     _emit("log", {"level": "info", "msg": f"[stdin] intercept_respond flow_id={flow_id} action={action} body_len={len(body) if body else 0}"})
     with _intercept_lock:
         _intercept_results[flow_id] = (action, body)
+        _intercept_result_times[flow_id] = time.time()
         entry = _intercepted_flows.get(flow_id)
         waiter = _intercept_waiters.get(flow_id)
         active_ids = list(_intercepted_flows.keys())
@@ -518,6 +564,7 @@ def _stdin_reader():
                             _capture_hosts = [h for h in cmd["capture_hosts"] if h.strip()]
                         if "breakpoints" in cmd:
                             _breakpoints = cmd["breakpoints"]
+                            _regex_cache.clear()
                         bp_count = len(_breakpoints)
                         hosts_snapshot = _capture_hosts
                     _emit("log", {"level": "info",
@@ -558,22 +605,12 @@ def main():
            "msg": f"starting mitmproxy on port {port}, "
                   f"{len(_breakpoints)} breakpoint(s), hosts={_capture_hosts}"})
 
-    # Fast-fail with a clear message if the port is already occupied.
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _s:
-        try:
-            _s.bind(("127.0.0.1", port))
-        except OSError:
-            _emit("log", {"level": "error",
-                          "msg": f"Port {port} is already in use. "
-                                 f"Stop the other process or change proxy_port in settings."})
-            _emit("status", {"running": False})
-            return
-
     stdin_thread = threading.Thread(target=_stdin_reader, daemon=True)
     stdin_thread.start()
 
     _loop = asyncio.new_event_loop()
     asyncio.set_event_loop(_loop)
+    cleanup_task: asyncio.Task | None = None
 
     async def _start():
         global _master
@@ -585,6 +622,7 @@ def main():
         await _master.run()
 
     try:
+        cleanup_task = _loop.create_task(_sweep_orphan_intercept_results())
         _loop.run_until_complete(_start())
     except KeyboardInterrupt:
         pass
@@ -593,6 +631,10 @@ def main():
     except Exception as e:
         _emit("log", {"level": "error", "msg": f"proxy error: {e}"})
     finally:
+        if cleanup_task is not None:
+            cleanup_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                _loop.run_until_complete(cleanup_task)
         if _async_client:
             try:
                 _loop.run_until_complete(_async_client.aclose())

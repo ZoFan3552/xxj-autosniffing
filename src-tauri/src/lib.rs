@@ -56,8 +56,8 @@ pub fn run() {
             }
             // Teardown ADB proxy using last known device (may already be disconnected)
             {
-                let adb_guard = state.adb.lock();
-                if let Some(ref adb) = *adb_guard {
+                let mut adb_guard = state.adb.lock();
+                if let Some(adb) = adb_guard.take() {
                     if let Some(device) = adb.last_known_device() {
                         adb.teardown_proxy(&device);
                     }

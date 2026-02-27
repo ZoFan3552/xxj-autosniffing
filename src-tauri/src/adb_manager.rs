@@ -1,25 +1,31 @@
 use parking_lot::Mutex;
 use std::process::Command;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU16, Ordering},
     Arc,
 };
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 pub struct AdbManager {
-    proxy_port: u16,
+    proxy_port: Arc<AtomicU16>,
     current_device: Arc<Mutex<Option<String>>>,
     polling: Arc<AtomicBool>,
+    poll_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl AdbManager {
     pub fn new(proxy_port: u16) -> Self {
         Self {
-            proxy_port,
+            proxy_port: Arc::new(AtomicU16::new(proxy_port)),
             current_device: Arc::new(Mutex::new(None)),
             polling: Arc::new(AtomicBool::new(false)),
+            poll_thread: Mutex::new(None),
         }
+    }
+
+    pub fn set_proxy_port(&self, port: u16) {
+        self.proxy_port.store(port, Ordering::SeqCst);
     }
 
     fn run_adb(args: &[&str]) -> (i32, String, String) {
@@ -63,23 +69,62 @@ impl AdbManager {
         self.current_device.lock().clone()
     }
 
-    pub fn setup_proxy(&self, device: &str) {
-        let port_str = format!("127.0.0.1:{}", self.proxy_port);
-        let tcp = format!("tcp:{}", self.proxy_port);
-        let (_, _, err) = Self::run_adb(&[
+    fn validate_device_serial(device: &str) -> bool {
+        !device.is_empty()
+            && device
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == ':' || c == '-' || c == '_' || c == '.')
+    }
+
+    pub fn setup_proxy(&self, device: &str) -> bool {
+        if !Self::validate_device_serial(device) {
+            log::error!("[adb] invalid device serial: {}", device);
+            return false;
+        }
+
+        let proxy_port = self.proxy_port.load(Ordering::SeqCst);
+        let port_str = format!("127.0.0.1:{}", proxy_port);
+        let tcp = format!("tcp:{}", proxy_port);
+
+        let (code, _, err) = Self::run_adb(&[
             "-s", device, "shell", "settings", "put", "global", "http_proxy", &port_str,
         ]);
+        if code != 0 {
+            log::warn!(
+                "[adb] setup_proxy http_proxy failed, code={}, stderr={}",
+                code,
+                err
+            );
+            return false;
+        }
         if !err.is_empty() {
             log::warn!("[adb] setup_proxy http_proxy stderr: {}", err);
         }
-        let (_, _, err) = Self::run_adb(&["-s", device, "reverse", &tcp, &tcp]);
+
+        let (code, _, err) = Self::run_adb(&["-s", device, "reverse", &tcp, &tcp]);
+        if code != 0 {
+            log::warn!(
+                "[adb] setup_proxy reverse failed, code={}, stderr={}",
+                code,
+                err
+            );
+            return false;
+        }
         if !err.is_empty() {
             log::warn!("[adb] setup_proxy reverse stderr: {}", err);
         }
+
+        true
     }
 
     pub fn teardown_proxy(&self, device: &str) {
-        let tcp = format!("tcp:{}", self.proxy_port);
+        if !Self::validate_device_serial(device) {
+            log::error!("[adb] invalid device serial: {}", device);
+            return;
+        }
+
+        let proxy_port = self.proxy_port.load(Ordering::SeqCst);
+        let tcp = format!("tcp:{}", proxy_port);
         let (_, _, err) = Self::run_adb(&[
             "-s", device, "shell", "settings", "put", "global", "http_proxy", ":0",
         ]);
@@ -99,7 +144,7 @@ impl AdbManager {
         let current = self.current_device.clone();
         let polling = self.polling.clone();
 
-        std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             while polling.load(Ordering::SeqCst) {
                 let device = Self::get_connected_device();
                 let mut cur = current.lock();
@@ -116,10 +161,16 @@ impl AdbManager {
                 std::thread::sleep(Duration::from_secs(3));
             }
         });
+
+        *self.poll_thread.lock() = Some(handle);
     }
 
     pub fn stop_polling(&self) {
         self.polling.store(false, Ordering::SeqCst);
+
+        if let Some(handle) = self.poll_thread.lock().take() {
+            let _ = handle.join();
+        }
     }
 
 }

@@ -27,6 +27,7 @@ function App() {
   const [configDraft, setConfigDraft] = useState<Config | null>(null);
   const [interceptBodies, setInterceptBodies] = useState<Record<string, string>>({});
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [isDirty, setIsDirty] = useState(false);
 
   useEffect(() => {
     invoke<Config>("get_config").then((c) => {
@@ -37,8 +38,10 @@ function App() {
   }, []);
 
   useEffect(() => {
+    let unlisteners: (() => void)[] = [];
     let cancelled = false;
-    const unlistenPromises = [
+
+    Promise.all([
       listen<RequestRecord>("record", (e) => {
         setRecords((prev) => {
           const idx = prev.findIndex((r) => r.flow_id === e.payload.flow_id);
@@ -71,13 +74,17 @@ function App() {
       listen<{ device: string }>("adb_status", (e) => {
         setAdbDevice(e.payload.device || null);
       }),
-    ];
-    Promise.all(unlistenPromises).then((fns) => {
-      if (cancelled) fns.forEach((u) => u());
+    ]).then((fns) => {
+      if (cancelled) {
+        fns.forEach((u) => u());
+        return;
+      }
+      unlisteners = fns;
     });
+
     return () => {
       cancelled = true;
-      Promise.all(unlistenPromises).then((fns) => fns.forEach((u) => u()));
+      unlisteners.forEach((u) => u());
     };
   }, []);
 
@@ -124,6 +131,7 @@ function App() {
     try {
       await invoke("set_config", { data: configDraft });
       setConfig(configDraft);
+      setIsDirty(false);
     } catch (e) {
       setErrorMsg(String(e));
     }
@@ -213,9 +221,12 @@ function App() {
         {tab === "settings" && configDraft && (
           <SettingsPanel
             config={configDraft}
-            onChange={setConfigDraft}
+            onChange={(next) => {
+              setConfigDraft(next);
+              setIsDirty(true);
+            }}
             onSave={saveConfig}
-            dirty={JSON.stringify(config) !== JSON.stringify(configDraft)}
+            dirty={isDirty}
           />
         )}
       </div>

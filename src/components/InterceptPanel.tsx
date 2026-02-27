@@ -60,7 +60,7 @@ function InterceptCard({
   }, [req.body_plain]);
 
   const currentText = body ?? initialBody;
-  const passBody = body !== undefined ? currentText : (req.body_plain ?? undefined);
+  const passBody = body !== undefined ? body : (req.body_plain ?? undefined);
 
   const handleChange = (val: string) => {
     onBodyChange(val);

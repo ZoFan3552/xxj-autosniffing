@@ -25,21 +25,47 @@ pub fn set_config(
     data: serde_json::Value,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let mut cfg = state.config.lock();
-    cfg.merge_from(&data)?;
-    cfg.save()?;
+    let (encrypt_url, decrypt_url, capture_hosts, breakpoints, proxy_port, proxy_port_changed) = {
+        let mut cfg = state.config.lock();
+        let old_proxy_port = cfg.proxy_port;
 
-    // Push config update to running Python subprocess in real-time.
-    // BreakpointRule derives Serialize so we can use it directly.
-    let bp_json = serde_json::to_value(&cfg.breakpoints).unwrap_or(serde_json::Value::Array(vec![]));
+        cfg.merge_from(&data)?;
+        cfg.save()?;
 
-    state.bridge.send_command(serde_json::json!({
+        (
+            cfg.encrypt_url.clone(),
+            cfg.decrypt_url.clone(),
+            cfg.capture_hosts.clone(),
+            serde_json::to_value(&cfg.breakpoints)
+                .unwrap_or(serde_json::Value::Array(vec![])),
+            cfg.proxy_port,
+            cfg.proxy_port != old_proxy_port,
+        )
+    };
+
+    if !state.bridge.send_command(serde_json::json!({
         "command": "update_config",
-        "encrypt_url": cfg.encrypt_url,
-        "decrypt_url": cfg.decrypt_url,
-        "capture_hosts": cfg.capture_hosts,
-        "breakpoints": bp_json,
-    }));
+        "encrypt_url": encrypt_url,
+        "decrypt_url": decrypt_url,
+        "capture_hosts": capture_hosts,
+        "breakpoints": breakpoints,
+    })) {
+        log::warn!("[config] failed to push config to Python subprocess (not running?)");
+    }
+
+    if proxy_port_changed {
+        let proxy_running = state
+            .proxy
+            .lock()
+            .as_ref()
+            .map(|runner| runner.is_alive())
+            .unwrap_or(false);
+        if !proxy_running {
+            if let Some(ref adb) = *state.adb.lock() {
+                adb.set_proxy_port(proxy_port);
+            }
+        }
+    }
 
     Ok(serde_json::json!({"ok": true}))
 }
@@ -72,13 +98,20 @@ pub fn proxy_start(
     *proxy_guard = Some(runner);
 
     // Setup ADB proxy after mitmproxy is confirmed to be started.
+    let mut adb_setup_failed = false;
     if let Some(ref adb) = *state.adb.lock() {
         if let Some(device) = AdbManager::get_connected_device() {
-            adb.setup_proxy(&device);
+            adb_setup_failed = !adb.setup_proxy(&device);
+            if adb_setup_failed {
+                let _ = app.emit(
+                    "proxy_error",
+                    serde_json::json!({"error": "ADB proxy setup failed; check adb connection and permissions"}),
+                );
+            }
         }
     }
 
-    Ok(serde_json::json!({"ok": true}))
+    Ok(serde_json::json!({"ok": true, "adb_setup_ok": !adb_setup_failed}))
 }
 
 #[tauri::command]

@@ -1,9 +1,12 @@
 use base64::Engine;
 use parking_lot::Mutex;
 use std::io::{BufRead, BufReader, Write};
+use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+#[cfg(not(target_os = "windows"))]
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 use crate::config::Config;
@@ -73,6 +76,7 @@ pub struct ProxyRunner {
     reader_thread: Option<std::thread::JoinHandle<()>>,
     stderr_thread: Option<std::thread::JoinHandle<()>>,
     bridge: Arc<InterceptBridge>,
+    script_path: PathBuf,
 }
 
 impl ProxyRunner {
@@ -94,13 +98,17 @@ impl ProxyRunner {
 
         log::info!("[proxy] Using Python: {}", python);
 
-        // Serialize the full config as JSON and pass via --config arg
-        let config_json = serde_json::to_string(cfg).map_err(|e| e.to_string())?;
-
         let mut cmd = Command::new(&python);
+        let launch_cfg = serde_json::json!({
+            "proxy_port": cfg.proxy_port,
+            "capture_hosts": cfg.capture_hosts,
+            "breakpoints": cfg.breakpoints,
+        });
+        let launch_cfg_json = serde_json::to_string(&launch_cfg).map_err(|e| e.to_string())?;
+
         cmd.arg(script_path.to_str().unwrap_or(""))
             .arg("--config")
-            .arg(&config_json)
+            .arg(&launch_cfg_json)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .stdin(Stdio::piped());
@@ -129,6 +137,13 @@ impl ProxyRunner {
         // Give the bridge the stdin handle for sending intercept responses
         if let Some(stdin) = child_stdin {
             bridge.set_stdin(stdin);
+            if !bridge.send_command(serde_json::json!({
+                "command": "update_config",
+                "encrypt_url": cfg.encrypt_url,
+                "decrypt_url": cfg.decrypt_url,
+            })) {
+                log::warn!("[proxy] failed to push sensitive config via stdin update_config");
+            }
         }
 
         let child_arc = Arc::new(Mutex::new(Some(child)));
@@ -244,6 +259,7 @@ impl ProxyRunner {
             reader_thread: Some(reader_thread),
             stderr_thread,
             bridge,
+            script_path,
         })
     }
 
@@ -255,16 +271,62 @@ impl ProxyRunner {
         log::info!("[proxy] stopping...");
         self.running.store(false, Ordering::SeqCst);
         self.bridge.clear_stdin();
+
         if let Some(mut child) = self.child.lock().take() {
-            let _ = child.kill();
+            #[cfg(target_os = "windows")]
+            {
+                let _ = child.kill();
+            }
+
+            #[cfg(not(target_os = "windows"))]
+            {
+                let pid = child.id();
+                let _ = Command::new("kill")
+                    .arg("-TERM")
+                    .arg(pid.to_string())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while Instant::now() < deadline {
+                    match child.try_wait() {
+                        Ok(Some(_)) => break,
+                        Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+                        Err(_) => break,
+                    }
+                }
+
+                if matches!(child.try_wait(), Ok(None)) {
+                    let _ = Command::new("kill")
+                        .arg("-KILL")
+                        .arg(pid.to_string())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status();
+                }
+            }
+
             let _ = child.wait();
         }
+
         if let Some(t) = self.reader_thread.take() {
             let _ = t.join();
         }
         if let Some(t) = self.stderr_thread.take() {
             let _ = t.join();
         }
+
+        if let Err(e) = std::fs::remove_file(&self.script_path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                log::warn!(
+                    "[proxy] failed to remove temp script {}: {}",
+                    self.script_path.display(),
+                    e
+                );
+            }
+        }
+
         log::info!("[proxy] stopped");
     }
 }
