@@ -1,5 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=DM+Sans:wght@400;500;600;700&display=swap');
-
 :root {
   --bg-0: #0a0c10;
   --bg-1: #0f1218;
@@ -22,8 +20,8 @@
   --method-post: #3b82f6;
   --method-put: #eab308;
   --method-delete: #ef4444;
-  --mono: 'JetBrains Mono', monospace;
-  --sans: 'DM Sans', sans-serif;
+  --mono: 'JetBrains Mono', 'Cascadia Code', 'Consolas', 'SFMono-Regular', monospace;
+  --sans: 'DM Sans', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   --radius: 6px;
   --radius-lg: 10px;
   --sidebar-w: 48px;
@@ -375,6 +373,63 @@ table.traffic-table {
   line-height: 1.7; white-space: pre-wrap; word-break: break-word; margin-bottom: 14px;
 }
 .error-modal-footer { display: flex; justify-content: flex-end; }
+
+/* ── Environment check panel ── */
+.env-check-list {
+  margin-top: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.env-check-item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px;
+  background: var(--bg-1);
+}
+.env-check-item.ok {
+  border-color: rgba(34, 197, 94, 0.35);
+}
+.env-check-item.fail {
+  border-color: rgba(239, 68, 68, 0.45);
+}
+.env-check-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+}
+.env-check-status {
+  width: 14px;
+  text-align: center;
+}
+.env-check-item.ok .env-check-status {
+  color: var(--green);
+}
+.env-check-item.fail .env-check-status {
+  color: var(--red);
+}
+.env-check-label {
+  color: var(--text-0);
+}
+.env-check-detail {
+  margin-top: 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-1);
+  line-height: 1.5;
+}
+.env-check-hint {
+  margin-top: 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--yellow);
+  line-height: 1.5;
+}
 
 /* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }

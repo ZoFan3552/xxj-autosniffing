@@ -1,8 +1,13 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "react-json-view-lite/dist/index.css";
-import type { Config, RequestRecord, InterceptRequest } from "./types";
+import type {
+  Config,
+  RequestRecord,
+  InterceptRequest,
+  EnvironmentCheckResult,
+} from "./types";
 import { TrafficPanel } from "./components/TrafficPanel";
 import { InterceptPanel } from "./components/InterceptPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
@@ -10,10 +15,17 @@ import { type DetailTab } from "./components/DetailPanel";
 import "./App.css";
 
 type Tab = "traffic" | "intercept" | "settings";
+type ProxyStartResult = {
+  ok: boolean;
+  reason?: string;
+  env?: EnvironmentCheckResult;
+  adb_setup_ok?: boolean;
+};
+
 const MAX_RECORDS = 2000;
 const MAX_INTERCEPTS = 200;
 
-function App() {
+function App({ onAppReady }: { onAppReady: () => void }) {
   const [tab, setTab] = useState<Tab>("traffic");
   const [proxyRunning, setProxyRunning] = useState(false);
   const [proxyLoading, setProxyLoading] = useState(false);
@@ -27,15 +39,43 @@ function App() {
   const [configDraft, setConfigDraft] = useState<Config | null>(null);
   const [interceptBodies, setInterceptBodies] = useState<Record<string, string>>({});
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [envCheck, setEnvCheck] = useState<EnvironmentCheckResult | null>(null);
   const [isDirty, setIsDirty] = useState(false);
+  const bootHiddenRef = useRef(false);
+
+  const markAppReady = useCallback(() => {
+    if (bootHiddenRef.current) return;
+    bootHiddenRef.current = true;
+    onAppReady();
+  }, [onAppReady]);
 
   useEffect(() => {
-    invoke<Config>("get_config").then((c) => {
-      setConfig(c);
-      setConfigDraft(c);
-    });
-    invoke<{ device: string | null }>("adb_status").then((r) => setAdbDevice(r.device));
-  }, []);
+    let cancelled = false;
+
+    Promise.all([
+      invoke<Config>("get_config"),
+      invoke<{ device: string | null }>("adb_status"),
+    ])
+      .then(([c, adb]) => {
+        if (cancelled) return;
+        setConfig(c);
+        setConfigDraft(c);
+        setAdbDevice(adb.device);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setErrorMsg(String(e));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          requestAnimationFrame(markAppReady);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [markAppReady]);
 
   useEffect(() => {
     let unlisteners: (() => void)[] = [];
@@ -68,6 +108,7 @@ function App() {
         setProxyLoading(false);
       }),
       listen<{ error: string }>("proxy_error", (e) => {
+        setEnvCheck(null);
         setErrorMsg(e.payload.error);
         setProxyLoading(false);
       }),
@@ -94,11 +135,20 @@ function App() {
     try {
       if (proxyRunning) {
         await invoke("proxy_stop");
+        setEnvCheck(null);
       } else {
-        const result = await invoke<{ ok: boolean; reason?: string }>("proxy_start");
+        const result = await invoke<ProxyStartResult>("proxy_start");
         if (!result.ok) {
-          setErrorMsg(result.reason ?? "启动失败");
+          if (result.env) {
+            setEnvCheck(result.env);
+            setErrorMsg(result.reason ?? "运行环境检查未通过");
+          } else {
+            setEnvCheck(null);
+            setErrorMsg(result.reason ?? "启动失败");
+          }
           setProxyLoading(false);
+        } else {
+          setEnvCheck(null);
         }
       }
     } catch (e) {
@@ -236,6 +286,20 @@ function App() {
           <div className="error-modal" onClick={(e) => e.stopPropagation()}>
             <div className="error-modal-title">⚠ 错误</div>
             <div className="error-modal-body">{errorMsg}</div>
+            {envCheck && (
+              <div className="env-check-list">
+                {envCheck.items.map((item) => (
+                  <div key={item.key} className={`env-check-item ${item.ok ? "ok" : "fail"}`}>
+                    <div className="env-check-main">
+                      <span className="env-check-status">{item.ok ? "✓" : "✗"}</span>
+                      <span className="env-check-label">{item.label}</span>
+                    </div>
+                    <div className="env-check-detail">{item.detail}</div>
+                    {item.hint && !item.ok && <div className="env-check-hint">{item.hint}</div>}
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="error-modal-footer">
               <button className="btn btn-sm" onClick={() => setErrorMsg(null)}>
                 关闭

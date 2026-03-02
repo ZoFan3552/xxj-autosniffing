@@ -8,6 +8,19 @@ export interface Config {
   breakpoints: BreakpointRule[];
 }
 
+export interface EnvironmentCheckItem {
+  key: string;
+  label: string;
+  ok: boolean;
+  detail: string;
+  hint?: string;
+}
+
+export interface EnvironmentCheckResult {
+  all_ok: boolean;
+  items: EnvironmentCheckItem[];
+}
+
 export interface BreakpointRule {
   /** URL regex pattern to match */
   url_pattern: string;

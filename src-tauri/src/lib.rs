@@ -36,6 +36,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_config,
             commands::set_config,
+            commands::check_environment,
             commands::proxy_start,
             commands::proxy_stop,
             commands::intercept_respond,

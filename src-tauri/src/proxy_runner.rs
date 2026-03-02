@@ -337,7 +337,7 @@ impl Drop for ProxyRunner {
     }
 }
 
-fn find_python() -> Option<String> {
+pub fn find_python() -> Option<String> {
     for name in &["python", "python3"] {
         let mut cmd = Command::new(name);
         cmd.arg("--version")
@@ -351,7 +351,7 @@ fn find_python() -> Option<String> {
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
 
-        if cmd.status().is_ok() {
+        if cmd.status().map(|s| s.success()).unwrap_or(false) {
             return Some(name.to_string());
         }
     }
