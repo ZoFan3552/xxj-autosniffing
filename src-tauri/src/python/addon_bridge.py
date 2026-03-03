@@ -76,27 +76,30 @@ def _get_pattern(pat: str) -> re.Pattern | None:
     with _config_lock:
         if pat in _regex_cache:
             return _regex_cache[pat]
-
-    try:
-        compiled = re.compile(pat)
-    except re.error:
-        compiled = None
-
-    with _config_lock:
-        existing = _regex_cache.get(pat)
-        if pat in _regex_cache:
-            return existing
+        # Compile inside the lock to prevent TOCTOU race with
+        # _regex_cache.clear() in update_config.
+        try:
+            compiled = re.compile(pat)
+        except re.error:
+            compiled = None
         _regex_cache[pat] = compiled
         return compiled
 
 
+_emit_error_logged = False
+
+
 def _emit(event_type, data):
+    global _emit_error_logged
     try:
         line = json.dumps({"event": event_type, "data": data}, ensure_ascii=True)
         sys.stdout.write(line + "\n")
         sys.stdout.flush()
-    except Exception:
-        pass
+    except Exception as e:
+        # Log the first failure to stderr so it can be diagnosed.
+        if not _emit_error_logged:
+            _emit_error_logged = True
+            print(f"[addon_bridge] stdout emit failed: {e}", file=sys.stderr, flush=True)
 
 
 def _safe_str(b):
@@ -433,6 +436,15 @@ class SniffAddon:
                             else:
                                 _emit("log", {"level": "error",
                                        "msg": "encrypt failed for response, keeping original"})
+                            # Body was modified — decrypt the new content for the record event.
+                            resp_body = flow.response.content or b""
+                            resp_plain = await _decrypt(resp_body) if resp_body else None
+                # Cache the already-decrypted response body to avoid a second decrypt call below.
+                _cached_resp_plain = resp_plain
+                _cached_resp_body_id = id(flow.response.content)
+            else:
+                _cached_resp_plain = None
+                _cached_resp_body_id = None
 
             # Recalculate duration after potential intercept wait
             duration = time.time() * 1000 - start_ms
@@ -442,7 +454,11 @@ class SniffAddon:
             # to avoid a redundant decrypt API call.
             req_plain = self._flow_req_plain.pop(flow.id, None)
             resp_body = flow.response.content or b""
-            resp_plain = await _decrypt(resp_body) if resp_body else None
+            # Reuse the cached decrypted response body if available and unchanged.
+            if _cached_resp_plain is not None and _cached_resp_body_id == id(flow.response.content):
+                resp_plain = _cached_resp_plain
+            else:
+                resp_plain = await _decrypt(resp_body) if resp_body else None
 
             _emit("record", {
                 "flow_id": flow.id, "seq": seq, "method": flow.request.method,
@@ -517,13 +533,12 @@ def _handle_intercept_respond(line: str):
         active_ids = list(_intercepted_flows.keys())
     _emit("log", {"level": "info", "msg": f"[stdin] active_intercepts={active_ids}"})
     if waiter and _loop:
+        # Wake the _do_intercept coroutine which will handle flow.resume().
+        # Do NOT call flow.resume() directly here to avoid double-resume.
         _loop.call_soon_threadsafe(waiter.set)
         _emit("log", {"level": "info", "msg": f"[stdin] waiter set for {flow_id}"})
-    if entry and _loop:
-        flow_obj, _phase = entry
-        _emit("log", {"level": "info", "msg": f"[stdin] found flow for {flow_id}, dispatch resume"})
-        _loop.call_soon_threadsafe(flow_obj.resume)
-        _emit("log", {"level": "info", "msg": f"[stdin] resume dispatched for {flow_id}"})
+    elif entry:
+        _emit("log", {"level": "warn", "msg": f"[stdin] flow entry exists for {flow_id} but no waiter, kept as pending result"})
     else:
         _emit("log", {"level": "warn", "msg": f"[stdin] no live entry for flow_id={flow_id}, kept as pending result"})
 
@@ -556,9 +571,12 @@ def _stdin_reader():
 
                 if cmd_type == "update_config":
                     with _config_lock:
+                        url_changed = False
                         if "encrypt_url" in cmd:
+                            url_changed = url_changed or (_encrypt_url != cmd["encrypt_url"])
                             _encrypt_url = cmd["encrypt_url"]
                         if "decrypt_url" in cmd:
+                            url_changed = url_changed or (_decrypt_url != cmd["decrypt_url"])
                             _decrypt_url = cmd["decrypt_url"]
                         if "capture_hosts" in cmd:
                             _capture_hosts = [h for h in cmd["capture_hosts"] if h.strip()]
@@ -567,6 +585,19 @@ def _stdin_reader():
                             _regex_cache.clear()
                         bp_count = len(_breakpoints)
                         hosts_snapshot = _capture_hosts
+                    # Rebuild httpx client when encrypt/decrypt URLs change so
+                    # the connection pool targets the correct host.
+                    if url_changed and _async_client is not None and _loop:
+                        async def _rebuild_client():
+                            global _async_client
+                            try:
+                                await _async_client.aclose()
+                            except Exception:
+                                pass
+                            _async_client = None
+                        _loop.call_soon_threadsafe(
+                            lambda: _loop.create_task(_rebuild_client())
+                        )
                     _emit("log", {"level": "info",
                            "msg": f"config updated: {bp_count} breakpoint(s), hosts={hosts_snapshot}"})
 

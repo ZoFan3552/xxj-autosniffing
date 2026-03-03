@@ -13,6 +13,8 @@ export function formatDuration(ms: number | null | undefined): string {
 
 export function shortContentType(ct: string | null | undefined): string {
   if (!ct) return "—";
+  // Strip parameters (e.g. "application/json; charset=utf-8" → "application/json")
+  const bare = ct.split(";")[0].trim();
   const map: Record<string, string> = {
     "application/json": "JSON",
     "text/html": "HTML",
@@ -31,5 +33,5 @@ export function shortContentType(ct: string | null | undefined): string {
     "application/x-protobuf": "Protobuf",
     "application/grpc": "gRPC",
   };
-  return map[ct] ?? ct.split("/").pop()?.split(";")[0] ?? ct;
+  return map[bare] ?? bare.split("/").pop() ?? bare;
 }

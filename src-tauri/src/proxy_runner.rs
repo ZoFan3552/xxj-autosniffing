@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-#[cfg(not(target_os = "windows"))]
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
@@ -69,14 +68,26 @@ impl InterceptBridge {
     }
 }
 
-/// Runs mitmproxy as a Python subprocess.
+/// Returns the path to the bundled sidecar executable, if it exists next to the app binary.
+fn find_sidecar() -> Option<PathBuf> {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))?;
+    let mut path = exe_dir.join("addon_bridge");
+    #[cfg(target_os = "windows")]
+    path.set_extension("exe");
+    if path.exists() { Some(path) } else { None }
+}
+
+/// Runs mitmproxy as a Python subprocess (or bundled sidecar).
 pub struct ProxyRunner {
     running: Arc<AtomicBool>,
     child: Arc<Mutex<Option<Child>>>,
     reader_thread: Option<std::thread::JoinHandle<()>>,
     stderr_thread: Option<std::thread::JoinHandle<()>>,
     bridge: Arc<InterceptBridge>,
-    script_path: PathBuf,
+    /// Temp script file written in Python-fallback mode; `None` when using sidecar.
+    script_path: Option<PathBuf>,
 }
 
 impl ProxyRunner {
@@ -87,18 +98,27 @@ impl ProxyRunner {
     ) -> Result<Self, String> {
         let running = Arc::new(AtomicBool::new(true));
 
-        let script_content = include_str!("python/addon_bridge.py");
-        let script_path = std::env::temp_dir().join("xxj_addon_bridge.py");
-        std::fs::write(&script_path, script_content)
-            .map_err(|e| format!("无法写入临时脚本：{}", e))?;
+        let (mut cmd, script_path) = match find_sidecar() {
+            Some(sidecar) => {
+                log::info!("[proxy] Using bundled sidecar: {}", sidecar.display());
+                (Command::new(&sidecar), None)
+            }
+            None => {
+                log::info!("[proxy] Sidecar not found, falling back to system Python");
+                let script_content = include_str!("python/addon_bridge.py");
+                let path = std::env::temp_dir().join("xxj_addon_bridge.py");
+                std::fs::write(&path, script_content)
+                    .map_err(|e| format!("无法写入临时脚本：{}", e))?;
+                let python = find_python().ok_or_else(|| {
+                    "未找到可用运行环境：请安装 Python 并执行 pip install mitmproxy httpx，或先运行 python scripts/build_addon.py 构建内置可执行文件".to_string()
+                })?;
+                log::info!("[proxy] Using Python: {}", python);
+                let mut c = Command::new(&python);
+                c.arg(path.to_str().unwrap_or(""));
+                (c, Some(path))
+            }
+        };
 
-        let python = find_python().ok_or_else(|| {
-            "未找到 Python，请确保 python 或 python3 已安装并在 PATH 中".to_string()
-        })?;
-
-        log::info!("[proxy] Using Python: {}", python);
-
-        let mut cmd = Command::new(&python);
         let launch_cfg = serde_json::json!({
             "proxy_port": cfg.proxy_port,
             "capture_hosts": cfg.capture_hosts,
@@ -106,8 +126,7 @@ impl ProxyRunner {
         });
         let launch_cfg_json = serde_json::to_string(&launch_cfg).map_err(|e| e.to_string())?;
 
-        cmd.arg(script_path.to_str().unwrap_or(""))
-            .arg("--config")
+        cmd.arg("--config")
             .arg(&launch_cfg_json)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -122,7 +141,7 @@ impl ProxyRunner {
 
         let mut child = cmd.spawn().map_err(|e| {
             format!(
-                "无法启动 Python 进程：{}\n请确保已安装 mitmproxy 和 httpx：\npip install mitmproxy httpx",
+                "无法启动代理进程：{}\n请运行 python scripts/build_addon.py 构建内置可执行文件，或安装 Python 依赖：pip install mitmproxy httpx",
                 e
             )
         })?;
@@ -275,7 +294,26 @@ impl ProxyRunner {
         if let Some(mut child) = self.child.lock().take() {
             #[cfg(target_os = "windows")]
             {
-                let _ = child.kill();
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x08000000;
+                let pid = child.id();
+                // /T kills the entire process tree (bootloader + spawned Python child).
+                // This is required for PyInstaller --onefile sidecars on Windows.
+                let _ = Command::new("taskkill")
+                    .args(["/F", "/T", "/PID", &pid.to_string()])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .status();
+                // Wait up to 3 s for the process to be fully reaped.
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while Instant::now() < deadline {
+                    match child.try_wait() {
+                        Ok(Some(_)) => break,
+                        Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+                        Err(_) => break,
+                    }
+                }
             }
 
             #[cfg(not(target_os = "windows"))]
@@ -317,13 +355,15 @@ impl ProxyRunner {
             let _ = t.join();
         }
 
-        if let Err(e) = std::fs::remove_file(&self.script_path) {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                log::warn!(
-                    "[proxy] failed to remove temp script {}: {}",
-                    self.script_path.display(),
-                    e
-                );
+        if let Some(ref path) = self.script_path {
+            if let Err(e) = std::fs::remove_file(path.as_path()) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    log::warn!(
+                        "[proxy] failed to remove temp script {}: {}",
+                        path.display(),
+                        e
+                    );
+                }
             }
         }
 

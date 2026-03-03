@@ -158,7 +158,13 @@ impl AdbManager {
                     );
                 }
                 drop(cur);
-                std::thread::sleep(Duration::from_secs(3));
+                // Sleep in small increments so stop_polling returns quickly.
+                for _ in 0..30 {
+                    if !polling.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
             }
         });
 

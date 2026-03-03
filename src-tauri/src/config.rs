@@ -72,6 +72,7 @@ impl Default for Config {
 impl Config {
     pub fn load() -> Self {
         let path = config_path();
+        log::info!("[config] config path: {}", path.display());
         match fs::read_to_string(path) {
             Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
             Err(_) => {

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Config, BreakpointRule } from "../types";
 
 export function SettingsPanel({
@@ -16,6 +16,17 @@ export function SettingsPanel({
     onChange({ ...config, [key]: val });
 
   const [newHost, setNewHost] = useState("");
+
+  // Ensure every breakpoint has a stable UI key.
+  useEffect(() => {
+    if (config.breakpoints.every((bp) => bp.id)) return;
+    update(
+      "breakpoints",
+      config.breakpoints.map((bp) =>
+        bp.id ? bp : { ...bp, id: crypto.randomUUID() },
+      ),
+    );
+  }, [config.breakpoints]);
 
   const addHost = () => {
     const h = newHost.trim().toLowerCase();
@@ -35,7 +46,13 @@ export function SettingsPanel({
   const addBreakpoint = () => {
     update("breakpoints", [
       ...config.breakpoints,
-      { url_pattern: "", break_request: true, break_response: false, enabled: true },
+      {
+        id: crypto.randomUUID(),
+        url_pattern: "",
+        break_request: true,
+        break_response: false,
+        enabled: true,
+      },
     ]);
   };
 
@@ -136,7 +153,7 @@ export function SettingsPanel({
               <span className="bp-col-action"></span>
             </div>
             {config.breakpoints.map((bp, idx) => (
-              <div key={idx} className={`bp-row ${bp.enabled ? "" : "bp-disabled"}`}>
+              <div key={bp.id ?? `${idx}-${bp.url_pattern}`} className={`bp-row ${bp.enabled ? "" : "bp-disabled"}`}>
                 <span className="bp-col-enabled">
                   <label className="toggle">
                     <input

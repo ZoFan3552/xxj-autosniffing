@@ -6,7 +6,6 @@ import type {
   Config,
   RequestRecord,
   InterceptRequest,
-  EnvironmentCheckResult,
 } from "./types";
 import { TrafficPanel } from "./components/TrafficPanel";
 import { InterceptPanel } from "./components/InterceptPanel";
@@ -18,7 +17,6 @@ type Tab = "traffic" | "intercept" | "settings";
 type ProxyStartResult = {
   ok: boolean;
   reason?: string;
-  env?: EnvironmentCheckResult;
   adb_setup_ok?: boolean;
 };
 
@@ -31,6 +29,8 @@ function App({ onAppReady }: { onAppReady: () => void }) {
   const [proxyLoading, setProxyLoading] = useState(false);
   const [adbDevice, setAdbDevice] = useState<string | null>(null);
   const [records, setRecords] = useState<RequestRecord[]>([]);
+  // O(1) lookup index for flow_id → position in records array.
+  const recordIndexRef = useRef<Map<string, number>>(new Map());
   const [intercepts, setIntercepts] = useState<InterceptRequest[]>([]);
   const [selected, setSelected] = useState<RequestRecord | null>(null);
   const [detailTab, setDetailTab] = useState<DetailTab>("overview");
@@ -39,7 +39,6 @@ function App({ onAppReady }: { onAppReady: () => void }) {
   const [configDraft, setConfigDraft] = useState<Config | null>(null);
   const [interceptBodies, setInterceptBodies] = useState<Record<string, string>>({});
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [envCheck, setEnvCheck] = useState<EnvironmentCheckResult | null>(null);
   const [isDirty, setIsDirty] = useState(false);
   const bootHiddenRef = useRef(false);
 
@@ -84,13 +83,21 @@ function App({ onAppReady }: { onAppReady: () => void }) {
     Promise.all([
       listen<RequestRecord>("record", (e) => {
         setRecords((prev) => {
-          const idx = prev.findIndex((r) => r.flow_id === e.payload.flow_id);
-          if (idx >= 0) {
+          const indexMap = recordIndexRef.current;
+          const existingIdx = indexMap.get(e.payload.flow_id);
+          if (existingIdx !== undefined && existingIdx < prev.length) {
             const updated = [...prev];
-            updated[idx] = e.payload;
+            updated[existingIdx] = e.payload;
             return updated;
           }
-          return [e.payload, ...prev].slice(0, MAX_RECORDS);
+          const next = [e.payload, ...prev].slice(0, MAX_RECORDS);
+          // Rebuild index after prepend + possible truncation.
+          const newMap = new Map<string, number>();
+          for (let i = 0; i < next.length; i++) {
+            newMap.set(next[i].flow_id, i);
+          }
+          recordIndexRef.current = newMap;
+          return next;
         });
         setSelected((prev) =>
           prev && prev.flow_id === e.payload.flow_id ? e.payload : prev,
@@ -108,7 +115,6 @@ function App({ onAppReady }: { onAppReady: () => void }) {
         setProxyLoading(false);
       }),
       listen<{ error: string }>("proxy_error", (e) => {
-        setEnvCheck(null);
         setErrorMsg(e.payload.error);
         setProxyLoading(false);
       }),
@@ -135,20 +141,11 @@ function App({ onAppReady }: { onAppReady: () => void }) {
     try {
       if (proxyRunning) {
         await invoke("proxy_stop");
-        setEnvCheck(null);
       } else {
         const result = await invoke<ProxyStartResult>("proxy_start");
         if (!result.ok) {
-          if (result.env) {
-            setEnvCheck(result.env);
-            setErrorMsg(result.reason ?? "运行环境检查未通过");
-          } else {
-            setEnvCheck(null);
-            setErrorMsg(result.reason ?? "启动失败");
-          }
+          setErrorMsg(result.reason ?? "启动失败");
           setProxyLoading(false);
-        } else {
-          setEnvCheck(null);
         }
       }
     } catch (e) {
@@ -159,13 +156,25 @@ function App({ onAppReady }: { onAppReady: () => void }) {
 
   const clearRecords = useCallback(() => {
     setRecords([]);
+    recordIndexRef.current = new Map();
     setSelected(null);
   }, []);
 
   const respondIntercept = useCallback(
     async (flowId: string, action: string, currentBody?: string) => {
-      const body = action === "pass" ? (currentBody ?? interceptBodies[flowId] ?? null) : null;
-      await invoke("intercept_respond", { payload: { flow_id: flowId, action, body } });
+      const body = action === "pass" ? (currentBody ?? null) : null;
+      try {
+        const result = await invoke<{ ok: boolean }>("intercept_respond", {
+          payload: { flow_id: flowId, action, body },
+        });
+        if (!result.ok) {
+          setErrorMsg("拦截响应发送失败，请检查代理进程是否正常运行");
+          return;
+        }
+      } catch (e) {
+        setErrorMsg(String(e));
+        return;
+      }
       setIntercepts((prev) => prev.filter((i) => i.flow_id !== flowId));
       setInterceptBodies((prev) => {
         const n = { ...prev };
@@ -173,7 +182,7 @@ function App({ onAppReady }: { onAppReady: () => void }) {
         return n;
       });
     },
-    [interceptBodies],
+    [],
   );
 
   const saveConfig = useCallback(async () => {
@@ -199,6 +208,13 @@ function App({ onAppReady }: { onAppReady: () => void }) {
         : records,
     [records, filter],
   );
+
+  useEffect(() => {
+    if (!selected) return;
+    if (!recordIndexRef.current.has(selected.flow_id)) {
+      setSelected(null);
+    }
+  }, [records, selected]);
 
   return (
     <div className="app-layout">
@@ -286,20 +302,6 @@ function App({ onAppReady }: { onAppReady: () => void }) {
           <div className="error-modal" onClick={(e) => e.stopPropagation()}>
             <div className="error-modal-title">⚠ 错误</div>
             <div className="error-modal-body">{errorMsg}</div>
-            {envCheck && (
-              <div className="env-check-list">
-                {envCheck.items.map((item) => (
-                  <div key={item.key} className={`env-check-item ${item.ok ? "ok" : "fail"}`}>
-                    <div className="env-check-main">
-                      <span className="env-check-status">{item.ok ? "✓" : "✗"}</span>
-                      <span className="env-check-label">{item.label}</span>
-                    </div>
-                    <div className="env-check-detail">{item.detail}</div>
-                    {item.hint && !item.ok && <div className="env-check-hint">{item.hint}</div>}
-                  </div>
-                ))}
-              </div>
-            )}
             <div className="error-modal-footer">
               <button className="btn btn-sm" onClick={() => setErrorMsg(null)}>
                 关闭

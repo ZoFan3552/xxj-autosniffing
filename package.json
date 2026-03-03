@@ -8,8 +8,9 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "build:win": "tauri build --no-bundle",
-    "build:mac": "tauri build --bundles app,dmg"
+    "build:win": "python scripts/build_addon.py && tauri build --bundles nsis,msi",
+    "build:win:noinstaller": "python scripts/build_addon.py && tauri build --no-bundle",
+    "build:mac": "python scripts/build_addon.py && tauri build --bundles app,dmg"
   },
   "dependencies": {
     "@tanstack/react-virtual": "^3.13.19",
