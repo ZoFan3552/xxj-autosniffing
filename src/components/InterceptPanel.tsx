@@ -1,5 +1,6 @@
 import { useState, useMemo } from "react";
 import type { InterceptRequest } from "../types";
+import { JsonEditorModal } from "./JsonEditorModal";
 
 export function InterceptPanel({
   intercepts,
@@ -46,7 +47,7 @@ function InterceptCard({
   onBodyChange: (val: string) => void;
   onRespond: (action: string, currentBody?: string) => void;
 }) {
-  const [jsonError, setJsonError] = useState<string | null>(null);
+  const [editorOpen, setEditorOpen] = useState(false);
 
   const initialBody = useMemo(() => {
     if (req.body_plain) {
@@ -61,28 +62,20 @@ function InterceptCard({
 
   const currentText = body ?? initialBody;
   const passBody = body !== undefined ? body : (req.body_plain ?? undefined);
-
-  const handleChange = (val: string) => {
-    onBodyChange(val);
-    try {
-      JSON.parse(val);
-      setJsonError(null);
-    } catch {
-      setJsonError("JSON 格式错误");
-    }
-  };
-
-  const handleFormat = () => {
-    try {
-      onBodyChange(JSON.stringify(JSON.parse(currentText), null, 2));
-      setJsonError(null);
-    } catch {
-      setJsonError("JSON 格式错误，无法格式化");
-    }
-  };
-
-  const phaseLabel = req.phase === "response" ? "响应体编辑" : "请求体编辑";
+  const phaseLabel = req.phase === "response" ? "响应体" : "请求体";
   const phaseBadge = req.phase === "response" ? "响应" : "请求";
+
+  // 预览文本：截取前几行
+  const previewText = useMemo(() => {
+    const lines = currentText.split("\n");
+    if (lines.length <= 6) return currentText;
+    return lines.slice(0, 6).join("\n") + "\n...";
+  }, [currentText]);
+
+  const handleEditorConfirm = (newValue: string) => {
+    onBodyChange(newValue);
+    setEditorOpen(false);
+  };
 
   return (
     <div className="intercept-card">
@@ -94,19 +87,23 @@ function InterceptCard({
         )}
         <span className="ic-url">{req.url}</span>
       </div>
-      <div className="ic-editor-toolbar">
-        <span className="ic-editor-label">{phaseLabel}</span>
-        {jsonError && <span className="ic-json-error">{jsonError}</span>}
-        <button className="btn btn-sm" onClick={handleFormat}>
-          格式化
-        </button>
+
+      <div className="ic-preview-section">
+        <div className="ic-editor-toolbar">
+          <span className="ic-editor-label">{phaseLabel}</span>
+          <button className="btn btn-sm btn-primary" onClick={() => setEditorOpen(true)}>
+            ✎ 编辑
+          </button>
+        </div>
+        <pre
+          className="ic-preview"
+          onClick={() => setEditorOpen(true)}
+          title="点击打开编辑器"
+        >
+          {previewText || "（空）"}
+        </pre>
       </div>
-      <textarea
-        className="ic-textarea"
-        value={currentText}
-        onChange={(e) => handleChange(e.target.value)}
-        spellCheck={false}
-      />
+
       <div className="ic-actions">
         <button className="btn btn-danger btn-sm" onClick={() => onRespond("abort")}>
           ✕ 丢弃
@@ -115,6 +112,15 @@ function InterceptCard({
           ✓ 放行
         </button>
       </div>
+
+      {editorOpen && (
+        <JsonEditorModal
+          value={currentText}
+          title={`${phaseLabel}编辑 — ${req.method} ${req.url}`}
+          onConfirm={handleEditorConfirm}
+          onCancel={() => setEditorOpen(false)}
+        />
+      )}
     </div>
   );
 }
