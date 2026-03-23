@@ -97,23 +97,23 @@ export function JsonEditorModal({
             value={currentValue}
             onChange={handleChange}
             onMount={handleMount}
-            theme="json-dark"
+            theme="json-light"
             beforeMount={(monaco) => {
-              monaco.editor.defineTheme("json-dark", {
-                base: "vs-dark",
+              monaco.editor.defineTheme("json-light", {
+                base: "vs",
                 inherit: true,
                 rules: [],
                 colors: {
-                  "editor.background": "#0f1218",
-                  "editor.foreground": "#e2e8f0",
-                  "editorLineNumber.foreground": "#64748b",
-                  "editorLineNumber.activeForeground": "#94a3b8",
-                  "editor.selectionBackground": "#1e3a5f",
-                  "editor.lineHighlightBackground": "#161b2480",
-                  "editorCursor.foreground": "#3b82f6",
-                  "editorIndentGuide.background": "#252d3d",
-                  "editorBracketMatch.background": "#1e3a5f60",
-                  "editorBracketMatch.border": "#3b82f6",
+                  "editor.background": "#FFFBFE",
+                  "editor.foreground": "#1C1B1F",
+                  "editorLineNumber.foreground": "#79747E",
+                  "editorLineNumber.activeForeground": "#49454F",
+                  "editor.selectionBackground": "#EADDFF",
+                  "editor.lineHighlightBackground": "#F7F2FA",
+                  "editorCursor.foreground": "#6750A4",
+                  "editorIndentGuide.background": "#CAC4D0",
+                  "editorBracketMatch.background": "#EADDFF80",
+                  "editorBracketMatch.border": "#6750A4",
                 },
               });
             }}

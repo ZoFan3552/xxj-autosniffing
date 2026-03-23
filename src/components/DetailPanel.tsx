@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { JsonView, darkStyles } from "react-json-view-lite";
+import { JsonView, defaultStyles } from "react-json-view-lite";
 import type { RequestRecord } from "../types";
 import { formatSize, formatDuration } from "../utils/format";
 
@@ -119,7 +119,7 @@ function JsonBody({ text }: { text: string | null | undefined }) {
   if (!text) return <pre style={{ color: "var(--text-2)" }}>（空）</pre>;
 
   const displayText = parsed != null ? JSON.stringify(parsed, null, 2) : text;
-  const jsonViewStyle = useMemo(() => ({ ...darkStyles, container: "json-tree-root" }), []);
+  const jsonViewStyle = useMemo(() => ({ ...defaultStyles, container: "json-tree-root" }), []);
 
   const handleCopy = () => {
     navigator.clipboard

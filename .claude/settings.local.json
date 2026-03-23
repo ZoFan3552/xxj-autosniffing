@@ -3,7 +3,8 @@
     "allow": [
       "Bash(npm run:*)",
       "Bash(cargo check:*)",
-      "Bash(git:*)"
+      "Bash(git:*)",
+      "Bash(npx tsc:*)"
     ]
   }
 }

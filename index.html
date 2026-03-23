@@ -4,10 +4,13 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <title>XXJ Auto Sniffing</title>
     <style>
       :root {
-        color-scheme: dark;
+        color-scheme: light;
       }
 
       html,
@@ -16,7 +19,7 @@
         height: 100%;
         margin: 0;
         overflow: hidden;
-        background: #0a0c10;
+        background: #FFFBFE;
       }
 
       #root {
@@ -32,12 +35,10 @@
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        gap: 12px;
-        background:
-          radial-gradient(110% 90% at 50% 8%, rgba(59, 130, 246, 0.22), transparent 65%),
-          linear-gradient(150deg, #0a0c10 0%, #121826 100%);
-        color: #e2e8f0;
-        font-family: "DM Sans", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        gap: 14px;
+        background: #FFFBFE;
+        color: #1C1B1F;
+        font-family: "Roboto", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
         letter-spacing: 0.1px;
         transition: opacity 220ms ease, transform 220ms ease;
       }
@@ -49,11 +50,10 @@
       }
 
       .boot-logo {
-        font-family: "JetBrains Mono", "Cascadia Code", "Consolas", monospace;
+        font-family: "Roboto", sans-serif;
         font-size: 24px;
-        font-weight: 700;
-        color: #93c5fd;
-        text-shadow: 0 0 18px rgba(59, 130, 246, 0.35);
+        font-weight: 600;
+        color: #6750A4;
       }
 
       .boot-loading-line {
@@ -62,7 +62,7 @@
         height: 4px;
         border-radius: 99px;
         overflow: hidden;
-        background: rgba(148, 163, 184, 0.15);
+        background: #E8DEF8;
       }
 
       .boot-loading-line::before {
@@ -73,13 +73,13 @@
         width: 40%;
         height: 100%;
         border-radius: inherit;
-        background: linear-gradient(90deg, rgba(59, 130, 246, 0), #60a5fa, rgba(59, 130, 246, 0));
+        background: linear-gradient(90deg, rgba(103,80,164,0), #6750A4, rgba(103,80,164,0));
         animation: boot-scan 1.25s ease-in-out infinite;
       }
 
       .boot-text {
-        font-size: 12px;
-        color: #94a3b8;
+        font-size: 13px;
+        color: #79747E;
       }
 
       @keyframes boot-scan {
