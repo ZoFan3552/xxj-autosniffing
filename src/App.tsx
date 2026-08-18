@@ -6,14 +6,20 @@ import type {
   Config,
   RequestRecord,
   InterceptRequest,
+  OutboundResult,
+  WsConn,
+  WsFrame,
 } from "./types";
 import { TrafficPanel } from "./components/TrafficPanel";
 import { InterceptPanel } from "./components/InterceptPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { WsPanel } from "./components/WsPanel";
+import { OutboundPanel } from "./components/OutboundPanel";
 import { type DetailTab } from "./components/DetailPanel";
+import { deriveIdentities } from "./utils/identity";
 import "./App.css";
 
-type Tab = "traffic" | "intercept" | "settings";
+type Tab = "traffic" | "intercept" | "ws" | "outbound" | "settings";
 type ProxyStartResult = {
   ok: boolean;
   reason?: string;
@@ -22,6 +28,11 @@ type ProxyStartResult = {
 
 const MAX_RECORDS = 2000;
 const MAX_INTERCEPTS = 200;
+// ponytail: 一轮 TTS 对话实测 55 帧约 286 KB，这个上限够几十轮；
+// 真要长时间挂机再考虑落盘。
+const MAX_WS_FRAMES = 5000;
+const MAX_WS_CONNS = 200;
+const MAX_OUTBOUND_RESULTS = 20;
 
 function App({ onAppReady }: { onAppReady: () => void }) {
   const [tab, setTab] = useState<Tab>("traffic");
@@ -29,8 +40,6 @@ function App({ onAppReady }: { onAppReady: () => void }) {
   const [proxyLoading, setProxyLoading] = useState(false);
   const [adbDevice, setAdbDevice] = useState<string | null>(null);
   const [records, setRecords] = useState<RequestRecord[]>([]);
-  // O(1) lookup index for flow_id → position in records array.
-  const recordIndexRef = useRef<Map<string, number>>(new Map());
   const [intercepts, setIntercepts] = useState<InterceptRequest[]>([]);
   const [selected, setSelected] = useState<RequestRecord | null>(null);
   const [detailTab, setDetailTab] = useState<DetailTab>("overview");
@@ -38,6 +47,10 @@ function App({ onAppReady }: { onAppReady: () => void }) {
   const [config, setConfig] = useState<Config | null>(null);
   const [configDraft, setConfigDraft] = useState<Config | null>(null);
   const [interceptBodies, setInterceptBodies] = useState<Record<string, string>>({});
+  const [wsConns, setWsConns] = useState<WsConn[]>([]);
+  const [wsFrames, setWsFrames] = useState<WsFrame[]>([]);
+  const [armedReplayPath, setArmedReplayPath] = useState<string | null>(null);
+  const [outboundResults, setOutboundResults] = useState<OutboundResult[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isDirty, setIsDirty] = useState(false);
   const bootHiddenRef = useRef(false);
@@ -82,22 +95,17 @@ function App({ onAppReady }: { onAppReady: () => void }) {
 
     Promise.all([
       listen<RequestRecord>("record", (e) => {
+        // 每条流量先发 pending 再发 complete，后者更新前者。索引必须从 prev 现算：
+        // updater 必须是纯函数，把位置记在外部 ref 里会被 StrictMode 的二次调用读到
+        // 上一次写入的值，于是「插到队首」退化成「覆盖第 0 行」，列表只剩最新一条。
         setRecords((prev) => {
-          const indexMap = recordIndexRef.current;
-          const existingIdx = indexMap.get(e.payload.flow_id);
-          if (existingIdx !== undefined && existingIdx < prev.length) {
+          const existingIdx = prev.findIndex((r) => r.flow_id === e.payload.flow_id);
+          if (existingIdx !== -1) {
             const updated = [...prev];
             updated[existingIdx] = e.payload;
             return updated;
           }
-          const next = [e.payload, ...prev].slice(0, MAX_RECORDS);
-          // Rebuild index after prepend + possible truncation.
-          const newMap = new Map<string, number>();
-          for (let i = 0; i < next.length; i++) {
-            newMap.set(next[i].flow_id, i);
-          }
-          recordIndexRef.current = newMap;
-          return next;
+          return [e.payload, ...prev].slice(0, MAX_RECORDS);
         });
         setSelected((prev) =>
           prev && prev.flow_id === e.payload.flow_id ? e.payload : prev,
@@ -120,6 +128,29 @@ function App({ onAppReady }: { onAppReady: () => void }) {
       }),
       listen<{ device: string }>("adb_status", (e) => {
         setAdbDevice(e.payload.device || null);
+      }),
+      listen<WsConn>("ws_conn", (e) => {
+        setWsConns((prev) => {
+          const idx = prev.findIndex((c) => c.conn === e.payload.conn);
+          if (idx === -1) return [e.payload, ...prev].slice(0, MAX_WS_CONNS);
+          const next = [...prev];
+          next[idx] = e.payload;
+          return next;
+        });
+      }),
+      listen<WsFrame>("ws_frame", (e) => {
+        setWsFrames((prev) => {
+          const next = [...prev, e.payload];
+          return next.length > MAX_WS_FRAMES ? next.slice(-MAX_WS_FRAMES) : next;
+        });
+        setWsConns((prev) =>
+          prev.map((c) =>
+            c.conn === e.payload.conn ? { ...c, frames: e.payload.seq } : c,
+          ),
+        );
+      }),
+      listen<OutboundResult>("outbound_result", (e) => {
+        setOutboundResults((prev) => [e.payload, ...prev].slice(0, MAX_OUTBOUND_RESULTS));
       }),
     ]).then((fns) => {
       if (cancelled) {
@@ -156,7 +187,6 @@ function App({ onAppReady }: { onAppReady: () => void }) {
 
   const clearRecords = useCallback(() => {
     setRecords([]);
-    recordIndexRef.current = new Map();
     setSelected(null);
   }, []);
 
@@ -185,6 +215,47 @@ function App({ onAppReady }: { onAppReady: () => void }) {
     [],
   );
 
+  const clearWs = useCallback(() => {
+    setWsConns([]);
+    setWsFrames([]);
+  }, []);
+
+  const armReplay = useCallback(async (path: string, frames: WsFrame[]) => {
+    try {
+      await invoke("ws_replay_arm", { path, frames });
+      setArmedReplayPath(frames.length > 0 ? path : null);
+    } catch (e) {
+      setErrorMsg(String(e));
+    }
+  }, []);
+
+  const sendOutbound = useCallback(
+    async (payload: {
+      id: string;
+      url: string;
+      method: string;
+      headers: Record<string, string>;
+      body_plain: string | null;
+      encrypt: boolean;
+    }) => {
+      try {
+        const result = await invoke<{ ok: boolean }>("outbound_send", { payload });
+        if (!result.ok) {
+          setErrorMsg("代发请求发送失败，请检查代理进程是否正常运行");
+        }
+      } catch (e) {
+        setErrorMsg(String(e));
+      }
+    },
+    [],
+  );
+
+  // 只在代发页算：派生要扫全部记录，抓包过程中每来一条流量都重算是白费。
+  const identities = useMemo(
+    () => (tab === "outbound" ? deriveIdentities(records) : []),
+    [records, tab],
+  );
+
   const saveConfig = useCallback(async () => {
     if (!configDraft) return;
     try {
@@ -209,9 +280,10 @@ function App({ onAppReady }: { onAppReady: () => void }) {
     [records, filter],
   );
 
+  // 选中的那条被 MAX_RECORDS 挤掉后，取消选中。
   useEffect(() => {
     if (!selected) return;
-    if (!recordIndexRef.current.has(selected.flow_id)) {
+    if (!records.some((r) => r.flow_id === selected.flow_id)) {
       setSelected(null);
     }
   }, [records, selected]);
@@ -256,6 +328,19 @@ function App({ onAppReady }: { onAppReady: () => void }) {
           onClick={() => setTab("intercept")}
         />
         <SidebarItem
+          icon="🔌"
+          label="WebSocket"
+          active={tab === "ws"}
+          badge={wsConns.length || undefined}
+          onClick={() => setTab("ws")}
+        />
+        <SidebarItem
+          icon="📤"
+          label="代发"
+          active={tab === "outbound"}
+          onClick={() => setTab("outbound")}
+        />
+        <SidebarItem
           icon="⚙"
           label="设置"
           active={tab === "settings"}
@@ -282,6 +367,23 @@ function App({ onAppReady }: { onAppReady: () => void }) {
             bodies={interceptBodies}
             onBodyChange={(id, val) => setInterceptBodies((p) => ({ ...p, [id]: val }))}
             onRespond={respondIntercept}
+          />
+        )}
+        {tab === "ws" && (
+          <WsPanel
+            conns={wsConns}
+            frames={wsFrames}
+            onArmReplay={armReplay}
+            armedPath={armedReplayPath}
+            onClear={clearWs}
+          />
+        )}
+        {tab === "outbound" && (
+          <OutboundPanel
+            identities={identities}
+            results={outboundResults}
+            running={proxyRunning}
+            onSend={sendOutbound}
           />
         )}
         {tab === "settings" && configDraft && (

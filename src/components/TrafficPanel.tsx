@@ -125,7 +125,15 @@ function TrafficTable({
                   <td><FlowStatus record={r} /></td>
                   <td><span className={`method-tag ${r.method}`}>{r.method}</span></td>
                   <td className="col-host" title={r.host}>{r.host}</td>
-                  <td className="col-path" title={r.path}>{r.path}</td>
+                  <td className="col-path" title={r.path}>
+                    {r.path}
+                    {r.mock && (
+                      <span className="mock-tag" title={`Mock 规则：${r.mock.rule}`}>
+                        {r.mock.mode === "patch" ? "改写" : "Mock"}
+                      </span>
+                    )}
+                    {r.origin === "outbound" && <span className="mock-tag">代发</span>}
+                  </td>
                   <td className="col-type" title={r.response_content_type ?? ""}>{shortContentType(r.response_content_type)}</td>
                   <td className="col-size">{formatSize(r.response_size)}</td>
                   <td className="col-duration">{formatDuration(r.duration)}</td>

@@ -73,9 +73,12 @@ fn find_sidecar() -> Option<PathBuf> {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))?;
-    let mut path = exe_dir.join("addon_bridge");
-    #[cfg(target_os = "windows")]
-    path.set_extension("exe");
+    let name = if cfg!(target_os = "windows") {
+        "addon_bridge.exe"
+    } else {
+        "addon_bridge"
+    };
+    let path = exe_dir.join(name);
     if path.exists() { Some(path) } else { None }
 }
 
@@ -119,10 +122,13 @@ impl ProxyRunner {
             }
         };
 
+        // Non-sensitive config goes on the command line so it is in place before
+        // mitmproxy binds the port; the sensitive half follows over stdin below.
         let launch_cfg = serde_json::json!({
             "proxy_port": cfg.proxy_port,
             "capture_hosts": cfg.capture_hosts,
             "breakpoints": cfg.breakpoints,
+            "mock_rules": cfg.mock_rules,
         });
         let launch_cfg_json = serde_json::to_string(&launch_cfg).map_err(|e| e.to_string())?;
 
@@ -156,11 +162,7 @@ impl ProxyRunner {
         // Give the bridge the stdin handle for sending intercept responses
         if let Some(stdin) = child_stdin {
             bridge.set_stdin(stdin);
-            if !bridge.send_command(serde_json::json!({
-                "command": "update_config",
-                "encrypt_url": cfg.encrypt_url,
-                "decrypt_url": cfg.decrypt_url,
-            })) {
+            if !bridge.send_command(cfg.update_command()) {
                 log::warn!("[proxy] failed to push sensitive config via stdin update_config");
             }
         }
@@ -210,6 +212,15 @@ impl ProxyRunner {
                                     }
                                     "intercept" => {
                                         let _ = app_handle.emit("intercept", &data);
+                                    }
+                                    "ws_conn" => {
+                                        let _ = app_handle.emit("ws_conn", &data);
+                                    }
+                                    "ws_frame" => {
+                                        let _ = app_handle.emit("ws_frame", &data);
+                                    }
+                                    "outbound_result" => {
+                                        let _ = app_handle.emit("outbound_result", &data);
                                     }
                                     "status" => {
                                         // Sync the AtomicBool so is_alive() stays accurate.

@@ -39,6 +39,8 @@ pub fn run() {
             commands::proxy_start,
             commands::proxy_stop,
             commands::intercept_respond,
+            commands::outbound_send,
+            commands::ws_replay_arm,
             commands::adb_status,
         ])
         .build(tauri::generate_context!())

@@ -25,7 +25,7 @@ pub fn set_config(
     data: serde_json::Value,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let (encrypt_url, decrypt_url, capture_hosts, breakpoints, proxy_port, proxy_port_changed) = {
+    let (update_command, proxy_port, proxy_port_changed) = {
         let mut cfg = state.config.lock();
         let old_proxy_port = cfg.proxy_port;
 
@@ -33,23 +33,13 @@ pub fn set_config(
         cfg.save()?;
 
         (
-            cfg.encrypt_url.clone(),
-            cfg.decrypt_url.clone(),
-            cfg.capture_hosts.clone(),
-            serde_json::to_value(&cfg.breakpoints)
-                .unwrap_or(serde_json::Value::Array(vec![])),
+            cfg.update_command(),
             cfg.proxy_port,
             cfg.proxy_port != old_proxy_port,
         )
     };
 
-    if !state.bridge.send_command(serde_json::json!({
-        "command": "update_config",
-        "encrypt_url": encrypt_url,
-        "decrypt_url": decrypt_url,
-        "capture_hosts": capture_hosts,
-        "breakpoints": breakpoints,
-    })) {
+    if !state.bridge.send_command(update_command) {
         log::warn!("[config] failed to push config to Python subprocess (not running?)");
     }
 
@@ -164,6 +154,44 @@ pub fn intercept_respond(
         .bridge
         .respond(&payload.flow_id, action_str.to_string(), payload.body);
     log::info!("[intercept_respond] bridge.respond returned ok={}", ok);
+    Ok(serde_json::json!({"ok": ok}))
+}
+
+// ── Outbound ──
+
+/// Ask the proxy to send a request as the device, routed back through the proxy itself.
+///
+/// The result arrives asynchronously as an `outbound_result` event carrying the same
+/// `id`, because the response has to travel back through the Python subprocess.
+#[tauri::command]
+pub fn outbound_send(
+    payload: serde_json::Value,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let mut cmd = payload;
+    if let Some(obj) = cmd.as_object_mut() {
+        obj.insert("command".to_string(), serde_json::json!("outbound"));
+    } else {
+        return Err("outbound payload must be an object".to_string());
+    }
+    Ok(serde_json::json!({"ok": state.bridge.send_command(cmd)}))
+}
+
+// ── WebSocket replay ──
+
+/// Arm (or, with an empty `frames`, clear) a WebSocket replay for a URL path.
+/// The next connection handshaking on that path consumes it.
+#[tauri::command]
+pub fn ws_replay_arm(
+    path: String,
+    frames: Vec<serde_json::Value>,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let ok = state.bridge.send_command(serde_json::json!({
+        "command": "ws_replay",
+        "path": path,
+        "frames": frames,
+    }));
     Ok(serde_json::json!({"ok": ok}))
 }
 

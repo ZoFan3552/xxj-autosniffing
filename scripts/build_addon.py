@@ -31,10 +31,17 @@ def get_target_triple() -> str:
 
 
 def install_dependencies() -> None:
-    """Ensure PyInstaller, mitmproxy, and httpx are installed."""
+    """Ensure PyInstaller and the addon's runtime deps are installed.
+
+    cryptography is a transitive dependency of mitmproxy, but the addon imports it
+    directly for local encryption, so it is listed explicitly.
+    """
     print("[build_addon] Installing PyInstaller + runtime deps...")
     subprocess.run(
-        [sys.executable, "-m", "pip", "install", "pyinstaller", "mitmproxy", "httpx"],
+        [
+            sys.executable, "-m", "pip", "install",
+            "pyinstaller", "mitmproxy", "httpx", "cryptography",
+        ],
         check=True,
     )
 
