@@ -118,6 +118,16 @@ def _wait_readable(path: Path, timeout: int = 60) -> None:
     )
 
 
+def verify(path: Path) -> None:
+    """跑一遍产物的自检，确认 PyInstaller 没有漏掉依赖。
+
+    漏掉的 import 在源码上跑不出来，只有打包后才暴露；不在这里拦住的话，通常要等
+    装到用户机器上、代理起不来时才发现。
+    """
+    print(f"[build_addon] Running self-check on {path.name}...")
+    subprocess.run([str(path), "--selftest"], check=True)
+
+
 def cleanup() -> None:
     """Remove PyInstaller temp directories."""
     for d in [
@@ -136,6 +146,7 @@ def main() -> None:
     install_dependencies()
     produced = build_executable(triple)
     dest = copy_to_binaries(produced, triple)
+    verify(dest)
     cleanup()
 
     print(f"\n[build_addon] Done! Sidecar ready at:\n  {dest}")

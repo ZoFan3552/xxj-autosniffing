@@ -67,6 +67,34 @@ npm run build:win:noinstaller
 npm run build:mac
 ```
 
+## 发布
+
+`.github/workflows/release.yml` 会在四个 runner 上分别出包，产物汇总到同一个 Release：
+
+| 平台 | Runner | 产物 |
+|---|---|---|
+| macOS (Apple Silicon) | `macos-15` | `.app`、`.dmg` |
+| macOS (Intel) | `macos-15-intel` | `.app`、`.dmg` |
+| Linux | `ubuntu-22.04` | `.deb`、`.AppImage` |
+| Windows | `windows-latest` | NSIS、MSI 安装包 |
+
+PyInstaller 不能交叉编译，所以每个 runner 都会先用 `scripts/build_addon.py` 构建自己那一份
+sidecar，并跑一遍 `--selftest`——打包漏掉依赖会在构建阶段就失败，不会等到用户装完才发现。
+
+触发方式二选一：
+
+```bash
+# 一、打标签（版本号取自 tauri.conf.json，两者要对上）
+git tag v0.1.0 && git push origin v0.1.0
+
+# 二、在 GitHub 的 Actions 页面手动运行该工作流
+```
+
+产物会进入一个**草稿 Release**，确认无误后再手动发布。
+
+安装包**未做签名**：macOS 上会被 Gatekeeper 拦下（右键「打开」可绕过），Windows 会有
+SmartScreen 提示。需要签名的话，在 workflow 的 `tauri-action` 步骤补上对应的证书环境变量。
+
 ## 使用说明
 
 ### 基础使用

@@ -39,6 +39,17 @@ XXJ_ADDON_CMD=src-tauri/binaries/addon_bridge-$(rustc -vV | sed -n 's/^host: //p
 - `adb` on PATH for Android device support
 - `pip install websockets` additionally to run the WebSocket cases of `scripts/e2e_addon.py`
 
+## Release
+
+`.github/workflows/release.yml` builds on four runners — `macos-15`, `macos-15-intel`,
+`ubuntu-22.04`, `windows-latest` — and collects every bundle into one draft GitHub Release.
+Triggered by pushing a `v*` tag or manually from the Actions tab; the version comes from
+`tauri.conf.json` via tauri-action's `__VERSION__` placeholder.
+
+PyInstaller cannot cross-compile, so each runner builds its own sidecar with
+`scripts/build_addon.py`, which now self-checks the produced binary — a missing bundled
+import fails the build rather than shipping a proxy that cannot start.
+
 ## Architecture Overview
 
 This is a **Tauri v2** desktop app (Rust + React/TypeScript) that provides HTTP traffic sniffing, decryption, and interception for mobile apps.

@@ -1,0 +1,88 @@
+name: 构建并发布三端安装包
+
+# 打 v 开头的标签时自动触发；也可以在 Actions 页面手动运行。
+# 版本号取自 tauri.conf.json，tagName 里的 __VERSION__ 会被替换成它。
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+# tauri-action 要创建 Release，需要写权限
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      # 一个平台失败不影响其余平台继续出包
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-15
+            label: macOS (Apple Silicon)
+            bundles: app,dmg
+          - platform: macos-15-intel
+            label: macOS (Intel)
+            bundles: app,dmg
+          # 用 22.04 而不是 latest：AppImage 的 glibc 下限跟随构建机，
+          # 在更老的发行版上装得上。该镜像下线时改成 ubuntu-24.04 即可。
+          - platform: ubuntu-22.04
+            label: Linux
+            bundles: deb,appimage
+          - platform: windows-latest
+            label: Windows
+            bundles: nsis,msi
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Linux 系统依赖
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libxdo-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            libssl-dev \
+            build-essential \
+            patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: npm ci
+
+      # PyInstaller 不能交叉编译，每个平台必须构建自己的 sidecar。
+      # 脚本末尾会用 --selftest 跑一遍产物，打包漏掉依赖会在这里就失败，
+      # 不会等到用户装完才发现代理起不来。
+      - name: 构建 Python sidecar
+        run: python scripts/build_addon.py
+
+      # 未做签名：macOS 上会被 Gatekeeper 拦（右键打开可绕过），Windows 会有
+      # SmartScreen 提示。需要签名的话在这里补 tauri-action 的签名环境变量。
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: xxj-auto-sniffing v__VERSION__
+          releaseDraft: true
+          prerelease: false
+          args: --bundles ${{ matrix.bundles }}
