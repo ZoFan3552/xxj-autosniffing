@@ -14,6 +14,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+# stdout 被重定向时（CI 里就是管道），Python 在 Windows 上用的是 locale 编码 cp1252，
+# 打印非 ASCII 字符会直接抛 UnicodeEncodeError。固定成 UTF-8。
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 REPO_ROOT = Path(__file__).parent.parent
 ADDON_SRC = REPO_ROOT / "src-tauri" / "src" / "python" / "addon_bridge.py"
 BINARIES_DIR = REPO_ROOT / "src-tauri" / "binaries"

@@ -36,7 +36,7 @@ jobs:
             bundles: nsis,msi
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 安装 Linux 系统依赖
         if: startsWith(matrix.platform, 'ubuntu')
@@ -58,12 +58,13 @@ jobs:
         with:
           workspaces: ./src-tauri -> target
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          # 20 已到期，且 Vite 7 要求 ^20.19 || >=22.12；本机就是在 22 上构建通过的
+          node-version: 22
           cache: npm
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
