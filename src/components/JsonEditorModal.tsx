@@ -1,5 +1,15 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import Editor, { type OnMount } from "@monaco-editor/react";
+import Editor, { loader, type OnMount } from "@monaco-editor/react";
+import * as monaco from "monaco-editor";
+import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
+import jsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
+
+// @monaco-editor/react 默认从 CDN 加载 monaco，会被应用的 CSP(default-src 'self') 拦截，
+// 导致编辑器一直停在 Loading。改为使用随包安装的本地 monaco 及其 worker。
+self.MonacoEnvironment = {
+  getWorker: (_workerId, label) => (label === "json" ? new jsonWorker() : new editorWorker()),
+};
+loader.config({ monaco });
 
 /**
  * 全屏 JSON 编辑弹窗，基于 Monaco Editor。

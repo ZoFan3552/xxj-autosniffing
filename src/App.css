@@ -339,7 +339,7 @@ table.traffic-table {
 .intercept-card .ic-status {
   font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--text-1);
 }
-.intercept-card .ic-url {
+.ic-url {
   font-family: var(--mono); font-size: 12px; color: var(--text-0);
   word-break: break-all; flex: 1;
 }
@@ -354,7 +354,7 @@ table.traffic-table {
 
 /* ── Intercept Preview ── */
 .ic-preview-section { margin-bottom: 10px; }
-.intercept-card .ic-preview {
+.ic-preview {
   font-family: var(--mono); font-size: 12px; line-height: 1.5;
   background: var(--bg-1); border: 1px solid var(--border);
   border-radius: var(--radius); color: var(--text-1);
@@ -363,7 +363,7 @@ table.traffic-table {
   cursor: pointer; transition: border-color 0.2s, box-shadow 0.2s;
   white-space: pre-wrap; word-break: break-all;
 }
-.intercept-card .ic-preview:hover {
+.ic-preview:hover {
   border-color: var(--accent); color: var(--text-0);
   box-shadow: 0 0 0 1px var(--accent);
 }
@@ -801,3 +801,10 @@ table.traffic-table {
 }
 .outbound-result.failed { border-color: var(--red); background: rgba(179,38,30,0.04); }
 .outbound-result-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+/* 结果里的响应体不可点击，且需要能滚动看全，而不是被裁掉 */
+.outbound-result .ic-preview {
+  cursor: default; max-height: 240px; overflow: auto;
+}
+.outbound-result .ic-preview:hover {
+  border-color: var(--border); color: var(--text-1); box-shadow: none;
+}
